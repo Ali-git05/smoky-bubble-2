@@ -1,0 +1,19 @@
+{
+  "name": "Smoky Bubble Kiosk",
+  "short_name": "SB Kiosk",
+  "description": "Smoky Bubble Customer Check-In",
+  "start_url": "/customer",
+  "scope": "/customer",
+  "display": "fullscreen",
+  "background_color": "#ffffff",
+  "theme_color": "#2c2c2a",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "any",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
