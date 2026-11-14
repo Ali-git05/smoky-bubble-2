@@ -1,6 +1,6 @@
 {
   "rewrites": [
     { "source": "/customer", "destination": "/customer.html" },
-    { "source": "/((?!api/|customer$).*)", "destination": "/index.html" }
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
