@@ -1,9 +1,25 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useSettings } from '../hooks/useSettings'
 import CustomerCheckin from '../components/kiosk/CustomerCheckin'
+import DOBPicker from '../components/kiosk/DOBPicker'
 
 const PHONE_KEYS = ['1','2','3','4','5','6','7','8','9','CLR','0','⌫']
+
+const OPT_IN_MESSAGE = "Smoky Bubble: You're now opted in to SMS rewards updates. Msg frequency varies, max 4/month. Msg & data rates may apply. Reply STOP to opt out, HELP for help."
+
+async function sendOptInSms(phone) {
+  try {
+    await fetch('/api/send-sms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: phone, message: OPT_IN_MESSAGE }),
+    })
+  } catch {
+    // Non-blocking — enrollment still succeeds if SMS fails
+  }
+}
 
 const QWERTY_ROWS = [
   ['Q','W','E','R','T','Y','U','I','O','P'],
@@ -18,15 +34,11 @@ function fmtPhone(d) {
 }
 
 export default function KioskPage() {
-  useEffect(() => {
-    const link = document.querySelector('link[rel="manifest"]')
-    if (link) link.href = '/manifest-customer.json'
-    return () => { if (link) link.href = '/manifest.json' }
-  }, [])
-
   const [phase, setPhase] = useState('phone')
   const [digits, setDigits] = useState('')
   const [name, setName] = useState('')
+  const [dob, setDob] = useState('')
+  const [smsOptIn, setSmsOptIn] = useState(false)
   const [pendingPhone, setPendingPhone] = useState('')
   const [checkedInCustomer, setCheckedInCustomer] = useState(null)
   const [error, setError] = useState(null)
@@ -63,9 +75,15 @@ export default function KioskPage() {
         setDigits('')
         setPhase('name')
       } else {
-        const updated = await recordCheckin(existing)
-        setCheckedInCustomer(updated)
-        setPhase('profile')
+        if (!existing.dob || !existing.sms_opt_in) {
+          const updated = await recordCheckin(existing)
+          setCheckedInCustomer(updated)
+          setPhase('update-info')
+        } else {
+          const updated = await recordCheckin(existing)
+          setCheckedInCustomer(updated)
+          setPhase('profile')
+        }
       }
     } catch {
       setError('Something went wrong. Please try again.')
@@ -85,7 +103,7 @@ export default function KioskPage() {
   }
 
   async function submitName() {
-    if (name.trim().length < 2 || busy) return
+    if (name.trim().length < 2 || !dob || !smsOptIn || busy) return
     setBusy(true)
     setPhase('loading')
     try {
@@ -94,6 +112,8 @@ export default function KioskPage() {
         .insert({
           name: name.trim(),
           phone: pendingPhone,
+          dob,
+          sms_opt_in: true,
           total_visits: 0,
           current_punches: 0,
           total_rewards_earned: 0,
@@ -105,6 +125,7 @@ export default function KioskPage() {
       if (err) throw err
       const updated = await recordCheckin(newCustomer)
       setCheckedInCustomer(updated)
+      sendOptInSms(pendingPhone)
       setPhase('profile')
     } catch (e) {
       setError(e?.message || 'Failed to create account. Please try again.')
@@ -113,15 +134,85 @@ export default function KioskPage() {
     setBusy(false)
   }
 
+  async function submitUpdateInfo() {
+    const hasDob = checkedInCustomer.dob || dob
+    if (!hasDob || !smsOptIn || busy) return
+    setBusy(true)
+    try {
+      const patch = { sms_opt_in: true }
+      if (!checkedInCustomer.dob && dob) patch.dob = dob
+      const { data: updated } = await supabase
+        .from('customers')
+        .update(patch)
+        .eq('id', checkedInCustomer.id)
+        .select().single()
+      if (updated) setCheckedInCustomer(updated)
+    } catch { /* non-blocking, still proceed */ }
+    if (smsOptIn) sendOptInSms(checkedInCustomer.phone)
+    setBusy(false)
+    setPhase('profile')
+  }
+
   function reset() {
     setCheckedInCustomer(null)
     setPendingPhone('')
     setDigits('')
     setName('')
+    setDob('')
+    setSmsOptIn(false)
     setError(null)
     setBusy(false)
     submitLock.current = false
     setPhase('phone')
+  }
+
+  if (phase === 'update-info' && checkedInCustomer) {
+    const canSubmit = (checkedInCustomer.dob || dob) && smsOptIn && !busy
+    return (
+      <div className="h-screen bg-white flex flex-col items-center justify-center px-10 select-none gap-6">
+        <h1 className="text-gray-900 font-bold text-3xl text-center">
+          Welcome back, {checkedInCustomer.name}!
+        </h1>
+        <p className="text-gray-400 text-center text-base max-w-sm">
+          We need a couple more details to keep your account up to date.
+        </p>
+
+        <div className="w-full max-w-sm flex flex-col gap-4">
+          {/* DOB — only show if missing */}
+          {!checkedInCustomer.dob && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-gray-500 text-sm font-medium">Date of Birth <span className="text-red-500">*</span></label>
+              <DOBPicker value={dob} onChange={setDob} compact />
+            </div>
+          )}
+
+          {/* SMS opt-in — only show if not yet opted in */}
+          {!checkedInCustomer.sms_opt_in && (
+            <label className="flex items-start gap-3 cursor-pointer" onClick={() => setSmsOptIn(v => !v)}>
+              <div className={`mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${smsOptIn ? 'bg-red-600 border-red-600' : 'border-gray-300 bg-white'}`}>
+                {smsOptIn && <span className="text-white text-xs font-bold">✓</span>}
+              </div>
+              <span className="text-gray-500 text-sm leading-relaxed">
+                I agree to receive recurring automated SMS messages (msg frequency varies, max 4/month) from Smoky Bubble about loyalty points, rewards, and promotions. Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.{' '}
+                <Link to="/terms" className="underline text-gray-400" onClick={e => e.stopPropagation()}>Terms</Link>
+                {' · '}
+                <Link to="/privacy" className="underline text-gray-400" onClick={e => e.stopPropagation()}>Privacy</Link>
+              </span>
+            </label>
+          )}
+        </div>
+
+        <div className="flex gap-3 w-full max-w-sm">
+          <button onClick={reset} className="flex-1 bg-gray-100 text-gray-400 font-semibold rounded-2xl py-5 text-lg hover:bg-gray-200 active:scale-95 transition-all">
+            Skip
+          </button>
+          <button onClick={submitUpdateInfo} disabled={!canSubmit}
+            className="flex-[2] bg-red-600 hover:bg-red-500 text-white font-bold rounded-2xl py-5 text-lg active:scale-95 transition-all disabled:opacity-30">
+            {busy ? '…' : 'Save & Continue'}
+          </button>
+        </div>
+      </div>
+    )
   }
 
   if (phase === 'loading') {
@@ -137,36 +228,56 @@ export default function KioskPage() {
   }
 
   if (phase === 'name') {
+    const canSubmit = name.trim().length >= 2 && dob && smsOptIn && !busy
     return (
       <div className="h-screen bg-white flex flex-col overflow-hidden select-none">
-        <div className="flex flex-col items-center justify-center px-10" style={{ height: '40%' }}>
-          <p className="text-gray-400 text-sm uppercase tracking-widest mb-6 text-center">
+        {/* Name display + DOB */}
+        <div className="flex flex-col items-center justify-center px-10 pt-6 pb-2" style={{ height: '38%' }}>
+          <p className="text-gray-400 text-sm uppercase tracking-widest mb-3 text-center">
             Welcome! What&apos;s your name?
           </p>
-          <div className="w-full max-w-3xl bg-gray-50 rounded-3xl px-10 py-5 text-center border border-gray-200" style={{ minHeight: 100 }}>
-            <span className="text-gray-900" style={{ fontSize: 64, lineHeight: 1.1, fontWeight: 300 }}>
+          <div className="w-full max-w-3xl bg-gray-50 rounded-3xl px-10 py-4 text-center border border-gray-200 mb-4" style={{ minHeight: 80 }}>
+            <span className="text-gray-900" style={{ fontSize: 52, lineHeight: 1.1, fontWeight: 300 }}>
               {name || <span className="text-gray-300">Your name</span>}
             </span>
           </div>
+          {/* DOB */}
+          <div className="flex items-center gap-3 w-full max-w-3xl">
+            <label className="text-gray-500 text-sm font-medium whitespace-nowrap">Date of Birth</label>
+            <DOBPicker value={dob} onChange={setDob} />
+          </div>
+          {/* SMS opt-in */}
+          <label className="flex items-start gap-3 mt-3 w-full max-w-3xl cursor-pointer" onClick={() => setSmsOptIn(v => !v)}>
+            <div className={`mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${smsOptIn ? 'bg-red-600 border-red-600' : 'border-gray-300 bg-white'}`}>
+              {smsOptIn && <span className="text-white text-xs font-bold">✓</span>}
+            </div>
+            <span className="text-gray-500 text-xs leading-relaxed">
+              I agree to receive recurring automated SMS messages (msg frequency varies, max 4/month) from Smoky Bubble about loyalty points, rewards, and promotions. Msg & data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.{' '}
+              <Link to="/terms" className="underline text-gray-400" onClick={e => e.stopPropagation()}>Terms</Link>
+              {' · '}
+              <Link to="/privacy" className="underline text-gray-400" onClick={e => e.stopPropagation()}>Privacy</Link>
+            </span>
+          </label>
         </div>
-        <div className="flex flex-col justify-center px-6 pb-5 gap-2" style={{ height: '60%' }}>
+        {/* Keyboard */}
+        <div className="flex flex-col justify-center px-6 pb-4 gap-1.5" style={{ height: '62%' }}>
           {QWERTY_ROWS.map((row, ri) => (
             <div key={ri} className="flex justify-center gap-1.5">
               {row.map(key => (
                 <button key={key} onClick={() => setName(n => n + key)}
                   className="flex-1 bg-gray-100 hover:bg-gray-200 rounded-xl text-gray-900 font-semibold active:scale-95 transition-all"
-                  style={{ height: 62, fontSize: 22, maxWidth: 60 }}>
+                  style={{ height: 58, fontSize: 22, maxWidth: 60 }}>
                   {key}
                 </button>
               ))}
             </div>
           ))}
           <div className="flex gap-2 mt-1">
-            <button onClick={reset} className="flex-shrink-0 bg-gray-100 rounded-xl text-gray-400 font-semibold hover:bg-gray-200 active:scale-95 transition-all px-5" style={{ height: 62, fontSize: 16 }}>Cancel</button>
-            <button onClick={() => setName(n => n + ' ')} className="flex-1 bg-gray-100 rounded-xl text-gray-500 font-semibold hover:bg-gray-200 active:scale-95 transition-all" style={{ height: 62, fontSize: 16 }}>SPACE</button>
-            <button onClick={() => setName(n => n.slice(0, -1))} className="flex-shrink-0 bg-gray-100 rounded-xl text-gray-500 hover:bg-gray-200 active:scale-95 transition-all px-6" style={{ height: 62, fontSize: 24 }}>⌫</button>
-            <button onClick={submitName} disabled={name.trim().length < 2 || busy}
-              className="flex-shrink-0 bg-red-600 hover:bg-red-500 rounded-xl text-white font-bold active:scale-95 transition-all disabled:opacity-30 px-8" style={{ height: 62, fontSize: 18 }}>
+            <button onClick={reset} className="flex-shrink-0 bg-gray-100 rounded-xl text-gray-400 font-semibold hover:bg-gray-200 active:scale-95 transition-all px-5" style={{ height: 58, fontSize: 16 }}>Cancel</button>
+            <button onClick={() => setName(n => n + ' ')} className="flex-1 bg-gray-100 rounded-xl text-gray-500 font-semibold hover:bg-gray-200 active:scale-95 transition-all" style={{ height: 58, fontSize: 16 }}>SPACE</button>
+            <button onClick={() => setName(n => n.slice(0, -1))} className="flex-shrink-0 bg-gray-100 rounded-xl text-gray-500 hover:bg-gray-200 active:scale-95 transition-all px-6" style={{ height: 58, fontSize: 24 }}>⌫</button>
+            <button onClick={submitName} disabled={!canSubmit}
+              className="flex-shrink-0 bg-red-600 hover:bg-red-500 rounded-xl text-white font-bold active:scale-95 transition-all disabled:opacity-30 px-8" style={{ height: 58, fontSize: 18 }}>
               {busy ? '…' : 'Confirm ✓'}
             </button>
           </div>
@@ -216,6 +327,17 @@ export default function KioskPage() {
           ))}
         </div>
         <p className="text-gray-300 text-xs mt-4">Tap your 10-digit number to check in</p>
+        <label className="flex items-start gap-3 mt-4 w-full max-w-md cursor-pointer" onClick={() => setSmsOptIn(v => !v)}>
+          <div className={`mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center transition-colors ${smsOptIn ? 'bg-red-600 border-red-600' : 'border-gray-300 bg-white'}`}>
+            {smsOptIn && <span className="text-white text-xs font-bold">✓</span>}
+          </div>
+          <span className="text-gray-400 text-xs leading-relaxed">
+            I agree to receive recurring automated SMS messages (msg frequency varies, max 4/month) from Smoky Bubble about loyalty points, rewards, and promotions. Msg &amp; data rates may apply. Reply STOP to cancel, HELP for help. Consent is not a condition of purchase.{' '}
+            <Link to="/terms" className="underline" onClick={e => e.stopPropagation()}>Terms</Link>
+            {' · '}
+            <Link to="/privacy" className="underline" onClick={e => e.stopPropagation()}>Privacy Policy</Link>
+          </span>
+        </label>
       </div>
     </div>
   )
