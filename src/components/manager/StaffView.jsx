@@ -12,9 +12,7 @@ export default function StaffView({ settings }) {
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [liveFlash, setLiveFlash] = useState(false)
-  const [rewardsUnlocked, setRewardsUnlocked] = useState(
-    () => sessionStorage.getItem('rewards-unlocked') === '1'
-  )
+  const [rewardsUnlocked, setRewardsUnlocked] = useState(false)
   const [pin, setPin] = useState('')
   const [pinError, setPinError] = useState('')
 
@@ -66,10 +64,18 @@ export default function StaffView({ settings }) {
     ))
   }, [])
 
+  function handleTabChange(tab) {
+    if (activeTab === 'rewards' && tab !== 'rewards') {
+      setRewardsUnlocked(false)
+      setPin('')
+      setPinError('')
+    }
+    setActiveTab(tab)
+  }
+
   function unlockRewards() {
     const password = settings.managerPassword
     if (!password || pin === password) {
-      sessionStorage.setItem('rewards-unlocked', '1')
       setRewardsUnlocked(true)
       setPin('')
       setPinError('')
@@ -105,7 +111,7 @@ export default function StaffView({ settings }) {
         {/* Tab nav */}
         <div className="flex flex-col border-b border-gray-100 flex-shrink-0">
           {TABS.map(tab => (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            <button key={tab.id} onClick={() => handleTabChange(tab.id)}
               className={`text-left px-4 py-3 text-base font-medium transition-colors flex items-center gap-2 ${
                 activeTab === tab.id
                   ? 'bg-gray-900 text-white'
